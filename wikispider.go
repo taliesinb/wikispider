@@ -25,7 +25,7 @@ func (art *Article) Download(cachePath string, client http.Client, limiter chan 
 	}
 
 	escaped := url.QueryEscape(art.title)
-	cachePath = filepath.Join(cachePath, escaped)
+	cachePath = filepath.Join(cachePath, escaped + ".wiki")
 	_, err := os.Stat(cachePath)
 
 	if err == nil {
@@ -115,7 +115,10 @@ func Spider(titles []string, path string, maxdepth, maxwidth, pool, delay int) {
 	counter := new(sync.WaitGroup)
 	
 	// which articles have we already visited
-	visited := make(map[string]bool, 8192) 
+	visited := make(map[string]bool, 8192)
+
+	// out-edges for each article
+	graph :=  make(map[string][]string, 8192)
 
 	// virtual channel with infinite buffer, modified from http://play.golang.org/p/AiHBsxTFpj
 	visitWriter := make(chan *Article)
@@ -184,6 +187,8 @@ func Spider(titles []string, path string, maxdepth, maxwidth, pool, delay int) {
 
 			links := page.Links()
 			width := 0
+
+			graph[page.title] = links
 			
 			for _, link := range links {
 
@@ -215,6 +220,21 @@ func Spider(titles []string, path string, maxdepth, maxwidth, pool, delay int) {
 			// cap the next generation
 			visitWriter <- nil
 		}
+	}
+
+	// write the graph
+	graphpath := filepath.Join(path, "graph.tsv")
+	file, err := os.Create(graphpath)
+	if err == nil {
+		for title, links := range graph {
+			str := title
+			for _, link := range links { str += "\t" + link }
+			str += "\n"
+			file.Write([]byte(str))
+		}
+		file.Close()
+	} else {
+		log.Printf("Couldn't write graph to disk", graphpath)
 	}
 
 	// TODO: Properly clean up infinite channel, download workers
