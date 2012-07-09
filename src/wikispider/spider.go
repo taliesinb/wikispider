@@ -1,86 +1,18 @@
-package main
+package wikispider
 
 import (
+	"strings"
 	"net"
 	"net/url"
 	"net/http"
 	"log"
-	"io/ioutil"
 	"os"
-	"flag"
 	"path/filepath"
 	"sync"
 	"time"
+	"fmt" 
 )
 
-type Article struct {
-	title string
-	body []byte
-}
-
-func (art *Article) Download(cachePath string, client http.Client, limiter chan bool) ( cached, ok bool ) {
-
-	if art.body != nil {
-		panic("Article already loaded")
-	}
-
-	escaped := url.QueryEscape(art.title)
-	cachePath = filepath.Join(cachePath, escaped + ".wiki")
-	_, err := os.Stat(cachePath)
-
-	if err == nil {
-		file, _ := os.Open(cachePath)
-		art.body, _ = ioutil.ReadAll(file)
-		file.Close()
-		return true, true
-	}
-	
-	<-limiter
-
-	url := "http://en.wikipedia.org/w/index.php?title=" + escaped + "&action=raw"
-
-	resp, err := client.Get(url)
-	if err != nil {
-		return false, false
-	}
-
-	defer resp.Body.Close()
-	art.body, err = ioutil.ReadAll(resp.Body)
-
-	if err != nil {
-		return false, false
-	}
-
-	file, err := os.Create(cachePath)
-	if err == nil { 
-		file.Write(art.body)
-		file.Close()
-	} else {
-		log.Printf("Couldn't write body of page %s to disk", art.title)
-		return false, false
-	}
-
-	return false, true
-}
-
-// return all non-template internal wikipedia links in a given article 
-func (a* Article) Links() []string {
-	slices := make([]string, 0, 32)
-
-outer: for s := a.body ; len(s) > 0 ; s = s[1:] {
-		if s[0] == '[' && s[1] == '[' {
-			var i int
-			for i = 0; s[i] != ']' && s[i] != '|' ; i++ {
-				if s[i] == ':' {
-					continue outer
-				}
-			}
-			slices = append(slices, string(s[2:i]))
-		}
-	}
-
-	return slices
-}
 
 func RateLimiter(delay int) chan bool {
 	
@@ -101,7 +33,7 @@ func RateLimiter(delay int) chan bool {
 	return limiter
 }
 
-func Spider(titles []string, path string, maxdepth, maxwidth, pool, delay int) {
+func Spider(titles []string, path string, maxdepth, maxwidth, pool, delay int, kind string) {
 
 	var total, total_new, total_errors int
 
@@ -161,7 +93,7 @@ func Spider(titles []string, path string, maxdepth, maxwidth, pool, delay int) {
 					}
 					visitWriter <- page	
 				} else {
-					log.Printf("\tError downloading \"%s\"", page.title)
+					log.Printf("\tError dowloading \"%s\"", page.title)
 					total_errors++
 				}
 				
@@ -175,6 +107,7 @@ func Spider(titles []string, path string, maxdepth, maxwidth, pool, delay int) {
 	depth := 0
 	visitWriter <- nil 
 	for _, t := range titles {
+		t = SanitizeTitle(t)
 		counter.Add(1)
 		download <- &Article{title:t}
 	}
@@ -186,6 +119,9 @@ func Spider(titles []string, path string, maxdepth, maxwidth, pool, delay int) {
 		if page != nil && depth <= maxdepth { // did we get a downloaded page to process?
 
 			links := page.Links()
+			if kind != "" && !Intersect(page.infobox, kind) {
+				continue
+			}
 			width := 0
 
 			graph[page.title] = links
@@ -196,7 +132,7 @@ func Spider(titles []string, path string, maxdepth, maxwidth, pool, delay int) {
 				// counting links we've already seen towards the width limit
 				if visited[link] { continue } 
 				visited[link] = true
-				
+
 				counter.Add(1)
 				download <- &Article{title:link}
 				
@@ -223,52 +159,37 @@ func Spider(titles []string, path string, maxdepth, maxwidth, pool, delay int) {
 	}
 
 	// write the graph
-	graphpath := filepath.Join(path, "graph.tsv")
+	escapedTitles := url.QueryEscape(strings.Join(titles,"_"))
+	graphfilename := fmt.Sprintf("graph_%s_%d_%d.tsv", escapedTitles, maxdepth, maxwidth)
+	graphpath := filepath.Join(path,graphfilename)
 	file, err := os.Create(graphpath)
 	if err == nil {
 		for title, links := range graph {
-			str := title
-			for _, link := range links { str += "\t" + link }
+			str := url.QueryEscape(title)
+			for _, link := range links { str += "\t" + url.QueryEscape(link) }
 			str += "\n"
 			file.Write([]byte(str))
 		}
-		file.Close()
 	} else {
-		log.Printf("Couldn't write graph to disk", graphpath)
+		log.Printf("Couldn't write graph to disk, err is %s", graphpath,err)
 	}
 
 	// TODO: Properly clean up infinite channel, download workers
 	
 	log.Printf("Visited %d unique pages, downloaded %d pages, %d errors", total, total_new, total_errors)
+	file.Close()
 }
 
-func main() {
+func SanitizeTitle(oldtitle string) (newtitle string) {
+	return strings.Replace(strings.ToUpper(string(oldtitle[0])) + strings.ToLower(oldtitle[1:]), " ", "_", -1)
 
-	var depth, width, pool, limit int
-	var path string
-	
-	flag.IntVar(&depth, "depth", 1, "Depth to traverse to")
-	flag.IntVar(&width, "width", 3, "Number of links to get from each page")
-	flag.IntVar(&pool, "pool", 4, "Number of simultaneous downloads")
-	flag.IntVar(&limit, "limit", 300, "Delay between downloads, in milliseconds (global to pool)")
-	flag.StringVar(&path, "path", "pages", "Directory in which to put the visited pages")
-	flag.Parse()
+}
 
-	if flag.NArg() == 0 {
-		panic("Require one or more starting articles")
-	}
-
-	p, ok := os.Stat(path)
-	if ok != nil {
-		log.Printf("Creating output directory \"%s\"\n", path)
-		wd, _ := os.Getwd()
-		wdi, _ := os.Stat(wd)
-		if os.Mkdir(path, wdi.Mode()) != nil {
-			panic("Couldn't create output directory")
+func Intersect(infoboxes []string , kind string ) bool {
+	for _,v := range(infoboxes){
+		if v == kind {
+			return true
 		}
-	} else if !p.IsDir() {
-		panic("Output path is not a directory")
 	}
-
-	Spider(flag.Args(), path, depth, width, pool, limit)
+	return false
 }
