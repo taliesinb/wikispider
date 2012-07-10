@@ -4,16 +4,16 @@ import (
 	"net/url"
 	"net/http"
 	"io/ioutil"
-	"os"
+	"strings"
 	"path/filepath"
 	"log"
-	"bytes"
+	"os"
 )
 
 
 type Article struct {
 	title string
-	body []byte
+	body string
 	redirects int
 	infobox []string
 }
@@ -23,10 +23,10 @@ func (art *Article) GetInfobox() (thereis bool) {
 	str := art.body
 	results := make([]string,0,32)
 	for {
-		index := bytes.Index(str, []byte("{{Infobox"))
+		index := strings.Index(str, "{{Infobox")
 		if index == -1 {break}
 		str = str[index+10:]
-		index2 := bytes.Index(str, []byte("\n"))
+		index2 := strings.Index(str, "\n")
 		results = append(results, string(str[0:index2]))
 	}
 	art.infobox = results
@@ -38,11 +38,11 @@ func (art *Article) GetInfobox() (thereis bool) {
 func (art *Article) CheckRedirect() (url string) {
 
 	str := art.body
-	index := bytes.Index(str, []byte("#REDIRECT"))
+	index := strings.Index(str, "#REDIRECT")
 	if index == -1 { return }
-	index   = bytes.Index(str, []byte("[["))
-	index2 := bytes.Index(str, []byte("]]"))
-	temp:=bytes.Split(str[index+2:index2], []byte("#"))
+	index   = strings.Index(str, "[[")
+	index2 := strings.Index(str, "]]")
+	temp := strings.Split(str[index+2:index2], "#")
 	art.title = string(temp[0])
 	
 	return string(art.title)
@@ -51,7 +51,7 @@ func (art *Article) CheckRedirect() (url string) {
 
 func (art *Article) Download(cachePath string, client http.Client, limiter chan bool) ( cached, ok bool ) {
 
-	if art.body != nil {
+	if art.body != "" {
 		panic("Article already loaded")
 	}
 retry_redirect:
@@ -60,9 +60,13 @@ retry_redirect:
 	_, err := os.Stat(filePath)
 
 	if err == nil {
-		file, _ := os.Open(filePath)
-		art.body, _ = ioutil.ReadAll(file)
-		file.Close()
+		log.Printf("Found page on disk, returning")
+		body, err := ioutil.ReadFile(filePath)
+		if err != nil {
+			log.Printf("Couldn't read from disk")
+			return true, false
+		}
+		art.body = string(body)
 		return true, true
 	}
 	
@@ -75,20 +79,20 @@ retry_redirect:
 		return false, false
 	}
 
-	defer resp.Body.Close()
-	art.body, err = ioutil.ReadAll(resp.Body)
+	bytes, err := ioutil.ReadAll(resp.Body)
+	resp.Body.Close()
 
 	if err != nil {
 		return false, false
 	}
+	art.body = string(bytes)
 
 	redirect := art.CheckRedirect()
 	if redirect != "" {
 		art.redirects++
 		if art.redirects > 4 {return false, false}
-		art.title = url.QueryEscape(redirect)
+		art.title = redirect
 		log.Printf("Got redirected %d times, now to %s",art.redirects, art.title)
-		art.body = nil
 		goto retry_redirect
 	}
 
@@ -98,18 +102,14 @@ retry_redirect:
 
 	art.GetInfobox()
 
-	file, err := os.Create(filePath)
-	if err == nil { 
-		file.Write(art.body)
-		file.Close()
-	} else {
-		log.Printf("Couldn't write body of page %s to disk and I have this error:\n\n %s\n\n", art.title, err)
+	err = ioutil.WriteFile(filePath, []byte(art.body), os.FileMode(0666))
+	if err != nil {
+		log.Printf("\tCouldn't write body of page %s to disk\n", art.title, err)
 		return false, false
 	}
 
 	return false, true
 }
-
 
 // return all non-template internal wikipedia links in a given article 
 func (a* Article) Links() []string {
