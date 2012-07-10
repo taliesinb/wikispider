@@ -33,7 +33,7 @@ func RateLimiter(delay int) chan bool {
 	return limiter
 }
 
-func Spider(titles []string, path string, maxdepth, maxwidth, pool, delay int, kind string) {
+func Spider(titles []string, path string, maxdepth, maxwidth, pool, delay int, kind string, rank bool) {
 
 	var total, total_new, total_errors int
 
@@ -118,11 +118,10 @@ func Spider(titles []string, path string, maxdepth, maxwidth, pool, delay int, k
 
 		if page != nil && depth <= maxdepth { // did we get a downloaded page to process?
 
-			links := page.Links()
+			links := page.Links(maxwidth, rank)
 			if kind != "" && !Intersect(page.infobox, kind) {
 				continue
 			}
-			width := 0
 
 			graph[page.title] = links
 			
@@ -135,9 +134,6 @@ func Spider(titles []string, path string, maxdepth, maxwidth, pool, delay int, k
 
 				counter.Add(1)
 				download <- &Article{title:link}
-				
-				width++
-				if width > maxwidth { break }
 			}
 
 		} else { // did we hit this generation's cap?

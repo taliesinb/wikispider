@@ -60,7 +60,6 @@ retry_redirect:
 	_, err := os.Stat(filePath)
 
 	if err == nil {
-		log.Printf("Found page on disk, returning")
 		body, err := ioutil.ReadFile(filePath)
 		if err != nil {
 			log.Printf("Couldn't read from disk")
@@ -92,7 +91,7 @@ retry_redirect:
 		art.redirects++
 		if art.redirects > 4 {return false, false}
 		art.title = redirect
-		log.Printf("Got redirected %d times, now to %s",art.redirects, art.title)
+		log.Printf("\tRedirected to %q", art.title)
 		goto retry_redirect
 	}
 
@@ -112,9 +111,9 @@ retry_redirect:
 }
 
 // return all non-template internal wikipedia links in a given article 
-func (a* Article) Links() []string {
+func (a* Article) Links(n int, rank bool) (links []string) {
 	
-	slices := make([]string, 0, 32)
+	links = make([]string, 0, 32)
 
 outer: for s := a.body ; len(s) > 0 ; s = s[1:] {
 		if s[0] == '[' && s[1] == '[' {
@@ -124,9 +123,18 @@ outer: for s := a.body ; len(s) > 0 ; s = s[1:] {
 					continue outer
 				}
 			}
-			slices = append(slices, string(s[2:i]))
+			links = append(links, string(s[2:i]))
 		}
 	}
 
-	return slices
+	if n >= len(links) {
+		return
+	}
+
+	if rank {
+		links = MostCommon(a.body, links, n)
+	} else {
+		links = links[:n]
+	}
+	return 
 }
