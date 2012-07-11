@@ -6,13 +6,14 @@ import (
 	"io/ioutil"
 	"strings"
 	"path/filepath"
+	"unicode"
 	"log"
 	"os"
 )
 
-
 type Article struct {
 	title string
+	parent string
 	body string
 	redirects int
 	infobox []string
@@ -43,71 +44,83 @@ func (art *Article) CheckRedirect() (url string) {
 	index   = strings.Index(str, "[[")
 	index2 := strings.Index(str, "]]")
 	temp := strings.Split(str[index+2:index2], "#")
-	art.title = string(temp[0])
 	
-	return string(art.title)
+	return string(temp[0])
 }
 
+func (art *Article) Write(filePath string) {
+	err := ioutil.WriteFile(filePath, []byte(art.body), os.FileMode(0666))
+	if err != nil {
+		log.Printf("\tCouldn't write body of page %s to disk\n", art.title, err)
+	}
+}
 
 func (art *Article) Download(cachePath string, client http.Client, limiter chan bool) ( cached, ok bool ) {
 
 	if art.body != "" {
 		panic("Article already loaded")
 	}
+	
 retry_redirect:
+
 	escaped := url.QueryEscape(art.title)
 	filePath := filepath.Join(cachePath, escaped + ".wiki")
 	_, err := os.Stat(filePath)
 
+	// either load from cache or download, redirect logic happens afterwards
 	if err == nil {
+		
 		body, err := ioutil.ReadFile(filePath)
 		if err != nil {
-			log.Printf("Couldn't read from disk")
+			log.Printf("\tCouldn't read %q from disk", art.title)
 			return true, false
 		}
 		art.body = string(body)
-		return true, true
+		cached = true
+		
+	} else {
+		
+		<-limiter
+
+		address := "http://en.wikipedia.org/w/index.php?title=" + escaped + "&action=raw"
+
+		resp, err := client.Get(address)
+		if err != nil { return false, false }
+
+		bytes, err := ioutil.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil { return false, false }
+		
+		art.body = string(bytes)
+
+		art.Write(filePath)
 	}
+	ok = true
 	
-	<-limiter
+	if redirect := art.CheckRedirect(); redirect != "" {
 
-	address := "http://en.wikipedia.org/w/index.php?title=" + escaped + "&action=raw"
-
-	resp, err := client.Get(address)
-	if err != nil {
-		return false, false
-	}
-
-	bytes, err := ioutil.ReadAll(resp.Body)
-	resp.Body.Close()
-
-	if err != nil {
-		return false, false
-	}
-	art.body = string(bytes)
-
-	redirect := art.CheckRedirect()
-	if redirect != "" {
 		art.redirects++
-		if art.redirects > 4 {return false, false}
+		
+		if art.redirects > 4 {
+			log.Printf("\tToo many redirects")
+			return false, false
+		}
+		log.Printf("\tRedirected %q to %q", art.title, redirect)
 		art.title = redirect
-		log.Printf("\tRedirected to %q", art.title)
 		goto retry_redirect
 	}
 
-	if art.redirects == 0 {
-		art.title = SanitizeTitle(art.title)
+	// sometimes redirects and normalization form a loop, guard against this
+	if art.redirects == 0 {		
+		if normalized := NormalizeTitle(art.title); normalized != art.title {
+			art.Write(filePath) // we want to store both versions
+			art.title = normalized
+		}
 	}
 
 	art.GetInfobox()
 
-	err = ioutil.WriteFile(filePath, []byte(art.body), os.FileMode(0666))
-	if err != nil {
-		log.Printf("\tCouldn't write body of page %s to disk\n", art.title, err)
-		return false, false
-	}
-
-	return false, true
+	return 
 }
 
 // return all non-template internal wikipedia links in a given article 
@@ -137,4 +150,18 @@ outer: for s := a.body ; len(s) > 0 ; s = s[1:] {
 		links = links[:n]
 	}
 	return 
+}
+
+func NormalizeTitle(title string) string {
+	if title == "" { return "" }
+	first := true
+	return strings.Map(
+		func(r rune) rune {
+		if first {
+			first = false
+			return unicode.ToUpper(r)
+		} 
+		if r == ' ' { return '_' }
+		return unicode.ToLower(r)
+	}, title)
 }

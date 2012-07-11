@@ -40,5 +40,5 @@ func main() {
 		panic("Output path is not a directory")
 	}
 	
-	wikispider.Spider(flag.Args(), path, depth, width, pool, limit, kind, rank)
+	wikispider.Spider(flag.Args(), path, depth+1, width, pool, limit, kind, rank)
 }
