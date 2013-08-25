@@ -33,9 +33,15 @@ func RateLimiter(delay int) chan bool {
 	return limiter
 }
 
-func Spider(titles []string, path string, maxdepth, maxwidth, pool, delay int, kind string, rank bool) {
+func Spider(titles []string, path string, maxdepth, maxwidth, pool, delay int, kind []string, rank bool, force bool) {
 
 	var total, total_new, total_errors int
+
+	var staleTime time.Time 
+
+	if force {
+		staleTime = time.Now()
+	}
 
 	// articles to be downloaded
 	download := make(chan *Article, 32)
@@ -75,19 +81,22 @@ func Spider(titles []string, path string, maxdepth, maxwidth, pool, delay int, k
 			}
 			for page := range download {
 				
-				cached, ok := page.Download(path, client, limiter)
+				cached, ok := page.Download(path, client, limiter, staleTime)
 				
 				if ok {
 					total++
-					if !cached {
-						log.Printf("\tDownloaded \"%s\"", page.title)
+					kindsStr := strings.Join(page.Kinds(), ",")
+					char := "↓"
+					if cached { 
+						char = "✓"
 						total_new++
-					} else {
-						log.Printf("\tAlready have \"%s\"", page.title)
 					}
+					log.Printf("\t%s %-64q %-6d\t%-6d\t%s", char, 
+						page.title, len(page.body), len(page.Links(-1, false)), kindsStr)
+
 					visitWriter <- page	
 				} else {
-					log.Printf("\tError dowloading \"%s\"", page.title)
+					log.Printf("\t✗ %-64q", page.title)
 					total_errors++
 				}
 				
@@ -127,8 +136,8 @@ func Spider(titles []string, path string, maxdepth, maxwidth, pool, delay int, k
 		if page != nil && depth <= maxdepth { // did we get a downloaded page to process?
 
 			links := page.Links(maxwidth, rank)
-			
-			if kind != "" && !Intersect(page.infobox, kind) {
+
+			if kind != nil && !Intersect(page.Kinds(), kind) && depth > 1 {
 				continue
 			}
 
@@ -136,9 +145,9 @@ func Spider(titles []string, path string, maxdepth, maxwidth, pool, delay int, k
 				url.QueryEscape(page.parent),
 				url.QueryEscape(page.title))
 
+
 			if depth < maxdepth {
 				for _, link := range links {
-
 					counter.Add(1)
 					download <- &Article{title:link, parent:page.title}
 				}
@@ -169,10 +178,12 @@ func Spider(titles []string, path string, maxdepth, maxwidth, pool, delay int, k
 	graphfile.Close()
 }
 
-func Intersect(infoboxes []string , kind string ) bool {
-	for _,v := range(infoboxes){
-		if v == kind {
-			return true
+func Intersect(infoboxes []string , kind []string ) bool {
+	for _, v := range(infoboxes){
+		for _, w := range(kind) {
+			if v == w {
+				return true
+			}
 		}
 	}
 	return false

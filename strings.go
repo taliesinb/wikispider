@@ -36,21 +36,21 @@ func MostCommon(text string, words []string, n int) []string {
 	}
 
 	tally := sorter{
-		make([]string, len(words)),
-		make([]int, len(words)),
+		make([]string, 0, len(words)),
+		make([]int, 0, len(words)),
 	}
 
 	dedup := make(map[string]bool, len(words))
-	for i, word := range words {
+	for _, word := range words {
 		if dedup[word] { continue }
 		dedup[word] = true
-		tally.str[i] = word
-		tally.num[i] = counts[word]
+		tally.str = append(tally.str, word)
+		tally.num = append(tally.num, counts[word])
 	}
 
 	sort.Sort(tally)
 
-	if n >= len(words) {
+	if n == -1 || n >= len(words) {
 		return tally.str
 	}
 	return tally.str[:n]
